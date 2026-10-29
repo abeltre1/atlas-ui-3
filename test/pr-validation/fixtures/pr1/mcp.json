@@ -1,0 +1,14 @@
+{
+  "filesystem": {
+    "command": ["python", "mcp/filesystem/main.py"],
+    "cwd": "atlas",
+    "env": {
+      "ATLAS_FS_ROOT": "${ATLAS_FS_ROOT}",
+      "ATLAS_FS_READ_ONLY": "${ATLAS_FS_READ_ONLY}"
+    },
+    "groups": ["users"],
+    "description": "Local directory mount under validation",
+    "short_description": "Local directory mount",
+    "compliance_level": "Public"
+  }
+}
