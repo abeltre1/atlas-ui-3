@@ -1,0 +1,8 @@
+models:
+  placeholder-model:
+    model_url: "http://127.0.0.1:9/v1"
+    model_name: "openai/placeholder-model"
+    api_key: "unused"
+    description: "Placeholder model so the backend boots; no chat is sent during this validation"
+    compliance_level: "Public"
+    supports_tools: true

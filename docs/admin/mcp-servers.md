@@ -1,6 +1,6 @@
 # MCP Server Configuration
 
-Last updated: 2026-10-16
+Last updated: 2026-10-29
 
 The `mcp.json` file defines the MCP (Model Context Protocol) servers that the application can connect to. These servers provide the tools and capabilities available to the LLM.
 
@@ -229,6 +229,62 @@ export MY_API_KEY="your-secret-api-key"
 - Never store secrets directly in the `env` object values
 - Set environment variables via your deployment system (Docker, Kubernetes, systemd, etc.)
 - Use different values for development, staging, and production environments
+
+## Mounting a Local Directory
+
+The bundled `filesystem` server (`atlas/mcp/filesystem/main.py`) mounts **one
+local directory** into the chat and confines every tool to it. Relative paths
+resolve against that directory, absolute paths are accepted only when they are
+already inside it, and symlinks are resolved before the check, so a link that
+points outside the directory is rejected like any other escape. The server
+never advertises a way to change the root at runtime.
+
+Copy [`mcp-filesystem.json`](../../atlas/config/mcp-example-configs/mcp-filesystem.json)
+into `config/mcp.json` and set the root:
+
+```json
+{
+  "filesystem": {
+    "command": ["python", "mcp/filesystem/main.py"],
+    "cwd": "atlas",
+    "env": {
+      "ATLAS_FS_ROOT": "${ATLAS_FS_ROOT}",
+      "ATLAS_FS_READ_ONLY": "false"
+    },
+    "groups": ["users"],
+    "require_approval": ["write_file", "delete_file", "create_directory"],
+    "compliance_level": "Public"
+  }
+}
+```
+
+```bash
+export ATLAS_FS_ROOT=/data/projects/alpha   # or set it in .env
+```
+
+The server reads three environment variables from its `env` block:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ATLAS_FS_ROOT` | the entry's `cwd` | Directory to mount. Must exist and be a directory, or the server refuses to start and the admin panel shows it as failed. |
+| `ATLAS_FS_READ_ONLY` | `false` | `true` registers only `read_file`, `list_directory`, `file_exists` and `get_mount_info`. The write, create and delete tools are not advertised to the model at all. |
+| `ATLAS_FS_MAX_READ_BYTES` | `1048576` | Largest file `read_file` will return. Larger files produce an error instead of being loaded into the model's context. |
+
+`get_mount_info` reports the mounted path and whether it is writable, so a user
+or the model can check what the server exposes before touching it.
+
+**Do not leave `ATLAS_FS_ROOT` unset with `cwd: "atlas"`.** Without a root the
+server falls back to its working directory, which in that configuration is the
+Atlas package itself, and a writable mount there lets the model edit the
+application's own code and package defaults. Point the root at a dedicated
+folder, and keep `require_approval` on the mutating tools unless the directory
+is disposable.
+
+Scaling note: this is a stdio server, so the mounted directory is the local
+disk of the backend replica that started it. On a multi-replica deployment each
+replica sees its own copy unless the path is a shared mount. It is intended for
+single-user and single-host installs; for shared, durable files use the S3
+file storage described in [File Storage](file-storage.md).
 
 ## Access Control with Groups
 

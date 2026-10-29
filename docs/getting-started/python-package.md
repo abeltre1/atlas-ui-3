@@ -1,6 +1,6 @@
 # Using Atlas as a Python Package
 
-Last updated: 2026-08-31
+Last updated: 2026-10-29
 
 Atlas can be installed as a Python package, allowing you to use it programmatically in your scripts or integrate it into your applications.
 
@@ -344,17 +344,21 @@ To use MCP tools, create an `mcp.json` configuration:
 ```bash
 cat > config/mcp.json << 'EOF'
 {
-  "servers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@anthropic/mcp-server-filesystem", "/path/to/allowed/dir"],
-      "description": "File system access",
-      "enabled": true
-    }
+  "filesystem": {
+    "command": ["python", "mcp/filesystem/main.py"],
+    "cwd": "atlas",
+    "env": {"ATLAS_FS_ROOT": "/path/to/allowed/dir", "ATLAS_FS_READ_ONLY": "true"},
+    "groups": ["users"],
+    "description": "Read files from one local directory",
+    "compliance_level": "Public"
   }
 }
 EOF
 ```
+
+The bundled `filesystem` server confines every tool to `ATLAS_FS_ROOT`. Drop
+`ATLAS_FS_READ_ONLY` (or set it to `false`) to also allow writes; see
+[Mounting a Local Directory](../admin/mcp-servers.md#mounting-a-local-directory).
 
 ### Quick Start Configuration
 
