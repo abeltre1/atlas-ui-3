@@ -37,11 +37,12 @@ async def main(root: str, outside: str, mode: str) -> None:
     )
     async with Client(transport) as client:
         names = sorted(t.name for t in await client.list_tools())
-        read_only_names = ["file_exists", "get_mount_info", "list_directory", "read_file"]
+        read_only_names = ["file_exists", "get_mount_info", "list_directory", "read_file", "search_content", "search_files"]
+        write_names = ["create_directory", "delete_file", "edit_file", "write_file"]
         if mode == "readonly":
             assert names == read_only_names, names
         else:
-            assert names == sorted(read_only_names + ["write_file", "create_directory", "delete_file"]), names
+            assert names == sorted(read_only_names + write_names), names
 
         info = _data(await client.call_tool("get_mount_info", {}))
         assert info["root"] == str(Path(root).resolve()), info
@@ -53,6 +54,13 @@ async def main(root: str, outside: str, mode: str) -> None:
         content = _data(await client.call_tool("read_file", {"path": "notes.txt"}))
         assert content["content"] == "hello from mount\n", content
 
+        found = _data(await client.call_tool("search_files", {"pattern": "*.txt"}))
+        assert "notes.txt" in [m["path"] for m in found["matches"]], found
+        hits = _data(await client.call_tool("search_content", {"query": "hello"}))
+        assert [(m["path"], m["line"]) for m in hits["matches"]] == [("notes.txt", 1)], hits
+        page = _data(await client.call_tool("read_file", {"path": "notes.txt", "max_lines": 1}))
+        assert page["end_line"] == 1 and page["has_more"] is False, page
+
         for escape in ("../secret.txt", os.path.join(outside, "secret.txt"), "/etc/passwd"):
             denied = _data(await client.call_tool("read_file", {"path": escape}))
             assert "outside the mounted directory" in denied.get("error", ""), (escape, denied)
@@ -61,6 +69,9 @@ async def main(root: str, outside: str, mode: str) -> None:
             written = _data(await client.call_tool("write_file", {"path": "out/new.txt", "content": "x"}))
             assert written.get("success") is True, written
             assert (Path(root) / "out" / "new.txt").read_text() == "x"
+            edited = _data(await client.call_tool("edit_file", {"path": "out/new.txt", "old_text": "x", "new_text": "y"}))
+            assert edited.get("replacements") == 1, edited
+            assert (Path(root) / "out" / "new.txt").read_text() == "y"
             denied = _data(await client.call_tool("write_file", {"path": "../pwned.txt", "content": "x"}))
             assert "outside the mounted directory" in denied.get("error", ""), denied
             assert not (Path(outside) / "pwned.txt").exists()

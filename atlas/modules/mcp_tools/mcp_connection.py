@@ -85,6 +85,25 @@ class ConnectionMixin:
     def _clear_server_failure(self, server_name: str) -> None:
         """Clear failure tracking for a server after successful connection."""
         self._failed_servers.pop(server_name, None)
+        getattr(self, "_init_failure_reasons", {}).pop(server_name, None)
+
+    def _note_init_failure(self, server_name: str, reason: str) -> None:
+        """Remember why ``_initialize_single_client`` is about to return None.
+
+        The callers record a generic "returned None" failure; this lets them
+        surface the real reason (an unresolved ``env`` variable, for example)
+        in the admin panel instead of only in the log.
+        """
+        if not hasattr(self, "_init_failure_reasons"):
+            self._init_failure_reasons: Dict[str, str] = {}
+        self._init_failure_reasons[server_name] = reason
+
+    def _init_failure_reason(self, server_name: str, fallback: str) -> str:
+        """Pop the reason noted by the last init attempt, or ``fallback``."""
+        reasons = getattr(self, "_init_failure_reasons", None)
+        if not reasons:
+            return fallback
+        return reasons.pop(server_name, None) or fallback
 
     def _calculate_backoff_delay(self, attempt_count: int) -> float:
         """Calculate exponential backoff delay for reconnection attempts.
@@ -211,6 +230,7 @@ class ConnectionMixin:
                         resolved_env[key] = resolve_env_var(value)
                     except ValueError as e:
                         logger.error(f"Failed to resolve env var {key} for {server_name}: {e}")
+                        self._note_init_failure(server_name, f"Could not resolve env var {key}: {e}")
                         return None
 
                 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -399,7 +419,7 @@ class ConnectionMixin:
                 if is_new:
                     print(f"  MCP connected: {server_name}", file=__import__('sys').stderr)
             else:
-                self._record_server_failure(server_name, "Initialization returned None")
+                self._record_server_failure(server_name, self._init_failure_reason(server_name, "Initialization returned None"))
                 logger.warning(f"Failed to initialize client for {server_name}")
 
         failed_servers = sorted(set(self.servers_config.keys()) - set(self.clients.keys()))
@@ -477,7 +497,7 @@ class ConnectionMixin:
                     # Discover tools and prompts for the reconnected server
                     await self._discover_and_register_server(server_name, client)
                 else:
-                    self._record_server_failure(server_name, "Reconnection returned None")
+                    self._record_server_failure(server_name, self._init_failure_reason(server_name, "Reconnection returned None"))
                     still_failed.append(server_name)
             except Exception as e:
                 error_msg = f"{type(e).__name__}: {e}"
@@ -651,7 +671,7 @@ class ConnectionMixin:
         try:
             client = await self._initialize_single_client(server_name, new_config)
             if client is None:
-                error = "Refresh returned None"
+                error = self._init_failure_reason(server_name, "Refresh returned None")
                 self._record_server_failure(server_name, error)
                 return {
                     "server": server_name,

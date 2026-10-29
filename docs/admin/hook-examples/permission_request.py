@@ -27,7 +27,7 @@ import json
 import os
 import sys
 
-READ_ONLY_TOOLS = ("filesystem__read_file", "filesystem__list_directory", "rag__search")
+READ_ONLY_TOOLS = ("filesystem_read_file", "filesystem_list_directory", "rag_search")
 AUTO_APPROVED_ROOT = "/workspace"
 
 env = json.load(sys.stdin)
@@ -37,7 +37,7 @@ args = payload.get("tool_args") if isinstance(payload.get("tool_args"), dict) el
 
 
 def _within_auto_approved_root(path: object) -> bool:
-    """A missing path means the tool takes none (e.g. rag__search): allowed."""
+    """A missing path means the tool takes none (e.g. rag_search): allowed."""
     if path is None:
         return True
     normalized = os.path.normpath(str(path))

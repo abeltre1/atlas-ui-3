@@ -29,7 +29,7 @@ design proposal.
        "PreToolUse": [
          {
            "name": "block-destructive-fs",
-           "matcher": "filesystem__.*",
+           "matcher": "filesystem_.*",
            "command": ["${ATLAS_CONFIG_DIR}/hooks/block_destructive.sh"],
            "timeout_ms": 2000
          }
@@ -37,6 +37,11 @@ design proposal.
      }
    }
    ```
+
+   For tool events the matcher value is the qualified tool name,
+   `<server>_<tool>` with a single underscore (`filesystem_write_file` for the
+   `write_file` tool of the `filesystem` server), exactly as the tools panel
+   and the LLM see it.
 
 2. Put the script at `config/hooks/block_destructive.sh` and make it executable.
 
@@ -99,7 +104,7 @@ A JSON object with a stable envelope plus an event-specific `payload`:
   "user_email": "user@example.gov",
   "compliance_level": "Internal",
   "payload": {
-    "tool_name": "filesystem__write_file",
+    "tool_name": "filesystem_write_file",
     "tool_args": { "path": "/etc/passwd", "content": "..." },
     "tool_call_id": "call-1"
   }
@@ -197,7 +202,7 @@ The simplest useful hook is three lines of bash with no JSON emitted at all.
 
 ```bash
 #!/usr/bin/env bash
-# config/hooks/block_destructive.sh  (PreToolUse, matcher "filesystem__.*")
+# config/hooks/block_destructive.sh  (PreToolUse, matcher "filesystem_.*")
 read -r envelope
 path=$(echo "$envelope" | jq -r '.payload.tool_args.path // empty')
 case "$path" in

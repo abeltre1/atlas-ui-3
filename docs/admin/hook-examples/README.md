@@ -54,7 +54,7 @@ without starting Atlas at all:
 
 ```bash
 echo '{"hook_event_name":"PreToolUse","user_email":"a@b.gov","payload":
-  {"tool_name":"filesystem__write_file","tool_args":{"path":"/etc/passwd"}}}' \
+  {"tool_name":"filesystem_write_file","tool_args":{"path":"/etc/passwd"}}}' \
   | docs/admin/hook-examples/pre_tool_use.sh; echo "exit=$?"
 # -> Policy: file tools may only touch /workspace (got: /etc/passwd)
 # -> exit=2

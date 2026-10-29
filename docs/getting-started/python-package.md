@@ -356,7 +356,7 @@ cat > config/mcp.json << 'EOF'
 EOF
 ```
 
-The bundled `filesystem` server confines every tool to `ATLAS_FS_ROOT`. Drop
+The bundled `filesystem` server confines every tool (list, search, paged read, and optionally write, edit, create, delete) to `ATLAS_FS_ROOT`. Drop
 `ATLAS_FS_READ_ONLY` (or set it to `false`) to also allow writes; see
 [Mounting a Local Directory](../admin/mcp-servers.md#mounting-a-local-directory).
 

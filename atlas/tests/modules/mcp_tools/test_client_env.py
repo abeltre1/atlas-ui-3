@@ -143,6 +143,33 @@ class TestMCPClientEnvironmentVariables:
         assert "MISSING_VAR" in caplog.text
 
     @pytest.mark.asyncio
+    async def test_missing_env_var_reason_reaches_failed_servers(self):
+        """The admin panel reads get_failed_servers(); it must carry the real reason.
+
+        Before this, initialize_clients() recorded the generic "Initialization
+        returned None" and the unresolved variable was only in the log.
+        """
+        server_config = {
+            "command": ["python", "server.py"],
+            "cwd": "backend",
+            "env": {"ATLAS_FS_ROOT": "${MISSING_VAR}"},
+        }
+        with patch('atlas.modules.mcp_tools.client.config_manager') as mock_config_manager:
+            mock_config_manager.mcp_config.servers = {"filesystem": Mock()}
+            mock_config_manager.mcp_config.servers["filesystem"].model_dump.return_value = server_config
+            with patch('os.path.exists', return_value=True):
+                manager = MCPToolManager()
+                manager.servers_config = {"filesystem": server_config}
+                await manager.initialize_clients()
+
+        failure = manager.get_failed_servers()["filesystem"]
+        assert "ATLAS_FS_ROOT" in failure["error"]
+        assert "MISSING_VAR" in failure["error"]
+        assert "returned None" not in failure["error"]
+        # The noted reason is consumed; a later generic failure is reported as such.
+        assert manager._init_failure_reason("filesystem", "fallback") == "fallback"
+
+    @pytest.mark.asyncio
     @patch('atlas.modules.mcp_tools.client.Client')
     @patch('fastmcp.client.transports.StdioTransport')
     async def test_stdio_client_with_env_no_cwd(self, mock_transport_class, mock_client_class, monkeypatch):

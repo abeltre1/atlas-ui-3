@@ -4,7 +4,7 @@
     "PreToolUse": [
       {
         "name": "block-destructive-fs",
-        "matcher": "filesystem__.*",
+        "matcher": "filesystem_.*",
         "command": ["${ATLAS_CONFIG_DIR}/hooks/block_destructive.sh"],
         "timeout_ms": 2000,
         "on_error": "deny"

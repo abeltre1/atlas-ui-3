@@ -3,7 +3,7 @@
 #
 # Event:    PreToolUse (execute_single_tool, before the tool is invoked -- both
 #           tools mode and the agentic loop).
-# Matcher:  the tool name, e.g. "filesystem__.*".
+# Matcher:  the tool name, e.g. "filesystem_.*".
 # Payload:  {"tool_name": str, "tool_args": {...}, "tool_call_id": str}
 # Can do:   modify (rewrite tool_args; security params such as _atlas_user are
 #           re-injected afterwards) | deny | require_approval | continue.

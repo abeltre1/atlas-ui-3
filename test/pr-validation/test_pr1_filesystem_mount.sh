@@ -54,7 +54,7 @@ ln -s "$OUTSIDE" "$MOUNT/escape_link"
 
 # --- 1. Real stdio transport, writable mount ---------------------------------
 python "$FIXTURES/transport_check.py" "$MOUNT" "$OUTSIDE" writable
-print_result $? "Writable mount: tools listed, read/list/write inside root, every escape denied"
+print_result $? "Writable mount: tools listed, read/list/search/write/edit inside root, every escape denied"
 
 # --- 2. Real stdio transport, read-only mount --------------------------------
 python "$FIXTURES/transport_check.py" "$MOUNT" "$OUTSIDE" readonly
@@ -127,14 +127,14 @@ config_tools() {
 start_backend false
 print_result $? "Backend starts with the filesystem server mounted at ATLAS_FS_ROOT"
 TOOLS="$(config_tools)"
-echo "$TOOLS" | grep -qx "write_file" && echo "$TOOLS" | grep -qx "get_mount_info"
+echo "$TOOLS" | grep -qx "write_file" && echo "$TOOLS" | grep -qx "edit_file" && echo "$TOOLS" | grep -qx "get_mount_info"
 print_result $? "/api/config lists write_file and get_mount_info for the writable mount"
 stop_backend
 
 start_backend true
 print_result $? "Backend starts with the filesystem server mounted read-only"
 TOOLS="$(config_tools)"
-echo "$TOOLS" | grep -qx "read_file" && ! echo "$TOOLS" | grep -q "write_file\|delete_file\|create_directory"
+echo "$TOOLS" | grep -qx "search_content" && ! echo "$TOOLS" | grep -q "write_file\|edit_file\|delete_file\|create_directory"
 print_result $? "/api/config lists only read tools for the read-only mount"
 stop_backend
 

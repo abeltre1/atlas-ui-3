@@ -91,7 +91,7 @@ class TestDocsExamples:
         outcome = await _run(
             HookEvent.USER_PROMPT_SUBMIT, "user_prompt_submit.py",
             {"prompt": "ssn 123-45-6789 key AKIAABCDEFGHIJKLMNOP",
-             "selected_tools": ["filesystem__read_file"], "selected_data_sources": [], "agent_mode": True},
+             "selected_tools": ["filesystem_read_file"], "selected_data_sources": [], "agent_mode": True},
         )
         assert outcome.modified
         assert "123-45-6789" not in outcome.payload["prompt"]
@@ -176,10 +176,10 @@ class TestDocsExamples:
 
     async def test_permission_request_auto_approves_and_escalates(self):
         auto = await _run(HookEvent.PERMISSION_REQUEST, "permission_request.py",
-                          {"tool_name": "filesystem__read_file",
+                          {"tool_name": "filesystem_read_file",
                            "tool_args": {"path": "/workspace/a.txt"},
                            "needs_approval": True, "admin_required": False},
-                          matcher_value="filesystem__read_file")
+                          matcher_value="filesystem_read_file")
         assert auto.modified and auto.payload["needs_approval"] is False
 
         escalated = await _run(HookEvent.PERMISSION_REQUEST, "permission_request.py",
@@ -190,45 +190,45 @@ class TestDocsExamples:
     async def test_permission_request_does_not_auto_approve_admin_tools(self):
         """needs_approval:false skips the gate outright, admin tools included."""
         outcome = await _run(HookEvent.PERMISSION_REQUEST, "permission_request.py",
-                             {"tool_name": "filesystem__read_file",
+                             {"tool_name": "filesystem_read_file",
                               "tool_args": {"path": "/workspace/a.txt"},
                               "needs_approval": True, "admin_required": True},
-                             matcher_value="filesystem__read_file")
+                             matcher_value="filesystem_read_file")
         assert outcome.verdict == "continue"
         assert outcome.payload["needs_approval"] is True
 
     async def test_permission_request_scopes_approval_to_the_path(self):
         outcome = await _run(HookEvent.PERMISSION_REQUEST, "permission_request.py",
-                             {"tool_name": "filesystem__read_file",
+                             {"tool_name": "filesystem_read_file",
                               "tool_args": {"path": "/etc/shadow"},
                               "needs_approval": True, "admin_required": False},
-                             matcher_value="filesystem__read_file")
+                             matcher_value="filesystem_read_file")
         assert outcome.payload["needs_approval"] is True
 
     async def test_pre_tool_use_blocks_writes_outside_workspace(self):
         blocked = await _run(HookEvent.PRE_TOOL_USE, "pre_tool_use.sh",
-                             {"tool_name": "filesystem__write_file", "tool_args": {"path": "/etc/passwd"}},
-                             matcher_value="filesystem__write_file")
+                             {"tool_name": "filesystem_write_file", "tool_args": {"path": "/etc/passwd"}},
+                             matcher_value="filesystem_write_file")
         assert blocked.verdict == "deny"
         assert "/workspace" in (blocked.reason or "")
 
         allowed = await _run(HookEvent.PRE_TOOL_USE, "pre_tool_use.sh",
-                             {"tool_name": "filesystem__write_file", "tool_args": {"path": "/workspace/a.txt"}},
-                             matcher_value="filesystem__write_file")
+                             {"tool_name": "filesystem_write_file", "tool_args": {"path": "/workspace/a.txt"}},
+                             matcher_value="filesystem_write_file")
         assert allowed.verdict == "continue"
 
     async def test_pre_tool_use_blocks_traversal_out_of_workspace(self):
         outcome = await _run(HookEvent.PRE_TOOL_USE, "pre_tool_use.sh",
-                             {"tool_name": "filesystem__write_file",
+                             {"tool_name": "filesystem_write_file",
                               "tool_args": {"path": "/workspace/../../etc/passwd"}},
-                             matcher_value="filesystem__write_file")
+                             matcher_value="filesystem_write_file")
         assert outcome.verdict == "deny"
 
     async def test_pre_tool_use_fails_closed_on_unparseable_args(self):
         """Malformed input is exactly what a policy hook must not wave through."""
         outcome = await _run(HookEvent.PRE_TOOL_USE, "pre_tool_use.sh",
-                             {"tool_name": "filesystem__write_file", "tool_args": "not-an-object"},
-                             matcher_value="filesystem__write_file")
+                             {"tool_name": "filesystem_write_file", "tool_args": "not-an-object"},
+                             matcher_value="filesystem_write_file")
         assert outcome.verdict == "deny"
 
     async def test_post_tool_use_redacts_secrets_from_a_result(self):
@@ -424,14 +424,14 @@ class TestDocumentedInstallPath:
         # The command as hooks.json ships it -- interpolated, not a literal path.
         cm._hooks_config = HooksConfig(hooks={"PreToolUse": [HookConfig(
             name="workspace-only-files",
-            matcher="filesystem__.*",
+            matcher="filesystem_.*",
             command=["${ATLAS_CONFIG_DIR}/hooks/pre_tool_use.sh"],
             timeout_ms=15000,
         )]})
         outcome = await HookManager(cm).run_event(
             HookEvent.PRE_TOOL_USE,
-            {"tool_name": "filesystem__write_file", "tool_args": {"path": "/etc/passwd"}},
-            session_context=_ctx(), matcher_value="filesystem__write_file",
+            {"tool_name": "filesystem_write_file", "tool_args": {"path": "/etc/passwd"}},
+            session_context=_ctx(), matcher_value="filesystem_write_file",
         )
         assert outcome.verdict == "deny"
         assert "/workspace" in (outcome.reason or "")

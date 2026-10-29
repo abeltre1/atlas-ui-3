@@ -2,10 +2,10 @@
 """
 Filesystem MCP Server using FastMCP.
 
-Mounts one local directory into the Atlas chat and exposes read/write
-operations on it through MCP. Every tool is confined to that directory:
-relative paths resolve against it, absolute paths must already be inside it,
-and symlinks are followed before the check so they cannot point outside.
+Mounts one local directory into the Atlas chat and exposes file operations
+on it through MCP. Every tool is confined to that directory: relative paths
+resolve against it, absolute paths must already be inside it, and symlinks
+are followed before the check so they cannot point outside.
 
 Configuration (environment variables, set via the ``env`` block of the
 server's ``mcp.json`` entry):
@@ -13,12 +13,12 @@ server's ``mcp.json`` entry):
 - ``ATLAS_FS_ROOT``: absolute path of the directory to mount. Defaults to the
   process working directory (the ``cwd`` of the ``mcp.json`` entry). The server
   refuses to start when the path is missing or is not a directory.
-- ``ATLAS_FS_READ_ONLY``: ``true`` registers only the read-only tools
-  (``read_file``, ``list_directory``, ``file_exists``, ``get_mount_info``).
-  The mutating tools are never advertised to the model. Defaults to ``false``.
-- ``ATLAS_FS_MAX_READ_BYTES``: largest file ``read_file`` returns, in bytes.
-  Defaults to 1 MiB. Larger files return an error instead of being read into
-  the model's context.
+- ``ATLAS_FS_READ_ONLY``: ``true`` registers only the read-only tools. The
+  mutating tools are never advertised to the model. Defaults to ``false``.
+- ``ATLAS_FS_MAX_READ_BYTES``: most text one ``read_file`` call returns, in
+  bytes. Defaults to 128 KiB; larger files are read in pages.
+- ``ATLAS_FS_MAX_LIST_ENTRIES``: most entries one listing or search returns.
+  Defaults to 500.
 
 This is a stdio server, so one process serves every user of the backend
 replica that started it and the directory is that replica's local disk. It is
@@ -27,100 +27,49 @@ meant for a single-user or single-host deployment; see docs/admin/mcp-servers.md
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Any, Dict
 
-from atlas.mcp_shared.server_factory import create_stdio_server
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-ROOT_ENV = "ATLAS_FS_ROOT"
-READ_ONLY_ENV = "ATLAS_FS_READ_ONLY"
-MAX_READ_BYTES_ENV = "ATLAS_FS_MAX_READ_BYTES"
-DEFAULT_MAX_READ_BYTES = 1024 * 1024
+from mount_operations import (  # noqa: E402
+    apply_edit,
+    content_search,
+    glob_search,
+    list_entries,
+    read_window,
+)
+from mount_policy import (  # noqa: E402
+    MountConfig,
+    error,
+    load_mount_config,
+    relative,
+    safe_path,
+)
 
-_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
-
-
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return raw.strip().lower() in _TRUE_VALUES
-
-
-def _resolve_root(raw: str | None) -> Path:
-    """Turn the configured root into an existing, resolved directory path.
-
-    Raises ValueError with an operator-readable message when the root cannot
-    be used, so the server fails at startup rather than on the first tool call.
-    """
-    candidate = Path(raw).expanduser() if raw and raw.strip() else Path(".")
-    try:
-        resolved = candidate.resolve(strict=True)
-    except FileNotFoundError:
-        raise ValueError(f"{ROOT_ENV} points to a path that does not exist: {candidate}")
-    except OSError as exc:
-        raise ValueError(f"{ROOT_ENV} could not be resolved ({candidate}): {exc}")
-    if not resolved.is_dir():
-        raise ValueError(f"{ROOT_ENV} must be a directory, not a file: {resolved}")
-    return resolved
-
-
-def _resolve_max_read_bytes(raw: str | None) -> int:
-    if raw is None or raw.strip() == "":
-        return DEFAULT_MAX_READ_BYTES
-    try:
-        value = int(raw)
-    except ValueError:
-        raise ValueError(f"{MAX_READ_BYTES_ENV} must be an integer number of bytes, got {raw!r}")
-    if value <= 0:
-        raise ValueError(f"{MAX_READ_BYTES_ENV} must be positive, got {value}")
-    return value
-
+from atlas.mcp_shared.server_factory import create_stdio_server  # noqa: E402
 
 try:
-    BASE_PATH = _resolve_root(os.environ.get(ROOT_ENV))
-    MAX_READ_BYTES = _resolve_max_read_bytes(os.environ.get(MAX_READ_BYTES_ENV))
+    CONFIG: MountConfig = load_mount_config()
 except ValueError as exc:
     print(f"filesystem MCP server: {exc}", file=sys.stderr)
     sys.exit(2)
 
-READ_ONLY = _env_flag(READ_ONLY_ENV)
+BASE_PATH = CONFIG.root
+READ_ONLY = CONFIG.read_only
+MAX_READ_BYTES = CONFIG.max_read_bytes
+MAX_LIST_ENTRIES = CONFIG.max_list_entries
 
 mcp = create_stdio_server("Filesystem")
 
 
 def _safe_path(path: str) -> Path:
-    """Resolve ``path`` and ensure it stays inside the mounted root.
-
-    Relative paths resolve against the root. Absolute paths are accepted only
-    when they are already inside the root. Symlinks are resolved before the
-    containment check so a link pointing outside the root is rejected.
-    """
-    requested_path = Path(path)
-    if requested_path.is_absolute():
-        full_path = requested_path
-    else:
-        full_path = BASE_PATH / requested_path
-
-    resolved_path = full_path.resolve()
-
-    try:
-        resolved_path.relative_to(BASE_PATH)
-    except ValueError:
-        raise PermissionError("Access denied: path outside the mounted directory")
-
-    return resolved_path
+    return safe_path(CONFIG, path)
 
 
 def _relative(path: Path) -> str:
-    rel = str(path.relative_to(BASE_PATH))
-    return "." if rel == "" else rel
-
-
-def _error(message: str) -> Dict[str, Any]:
-    return {"results": {"error": message}}
+    return relative(CONFIG, path)
 
 
 def get_mount_info() -> Dict[str, Any]:
@@ -134,212 +83,190 @@ def get_mount_info() -> Dict[str, Any]:
     Returns:
         Dictionary containing:
         - root: absolute path of the mounted directory
-        - read_only: true when only read, list, and exists tools are available
-        - max_read_bytes: largest file read_file will return
+        - read_only: true when only read, list, search, and exists tools are available
+        - max_read_bytes: most text one read_file call returns; longer files are paged
+        - max_list_entries: most entries one listing or search returns
+        - tools: names of the tools this server currently exposes
     """
     return {
         "results": {
             "root": str(BASE_PATH),
             "read_only": READ_ONLY,
             "max_read_bytes": MAX_READ_BYTES,
+            "max_list_entries": MAX_LIST_ENTRIES,
+            "tools": [t.__name__ for t in (READ_TOOLS if READ_ONLY else READ_TOOLS + WRITE_TOOLS)],
         }
     }
 
 
-def read_file(path: str) -> Dict[str, Any]:
+def read_file(path: str, start_line: int = 1, max_lines: int = 0) -> Dict[str, Any]:
     """
-    Read the complete contents of a UTF-8 text file inside the mounted directory.
+    Read a UTF-8 text file inside the mounted directory, one page at a time.
 
-    - Relative paths resolve from the mounted root; absolute paths must be inside it
-    - Files larger than the configured read limit are refused (see get_mount_info)
-    - Returns the content together with its size and root-relative path
+    - Returns lines from start_line onward, up to max_lines lines (0 = no line
+      limit) and never more than the server's read byte limit
+    - When has_more is true, call again with start_line = next_start_line to
+      continue; large files are meant to be read in pages, not all at once
+    - Use search_content first to find the lines you need in a large file
 
     Args:
         path: File path to read, relative to the mounted root or absolute within it.
+        start_line: First line to return (1-based). Defaults to 1.
+        max_lines: Maximum number of lines to return. 0 means as many as fit.
 
     Returns:
         Dictionary containing:
-        - content: complete file contents (UTF-8)
-        - size: file size in bytes
+        - content: the text of the returned lines
         - path: path relative to the mounted root
-        Or an error message if the file is missing, too large, or outside the root
+        - size: whole file size in bytes
+        - start_line, end_line: the range returned (end_line 0 for an empty file)
+        - has_more: whether lines remain after end_line
+        - next_start_line: where to continue when has_more is true
+        - truncated_by_bytes: true when the byte limit cut the page short
+        Or an error message if the file is missing, not text, or outside the root
     """
     try:
+        if start_line < 1:
+            return error("start_line must be 1 or greater")
+        if max_lines < 0:
+            return error("max_lines must be 0 or greater")
         file_path = _safe_path(path)
         if not file_path.exists():
-            return _error(f"File not found: {path}")
-
+            return error(f"File not found: {path}")
         if file_path.is_dir():
-            return _error(f"Path is a directory: {path}")
-
-        size = file_path.stat().st_size
-        if size > MAX_READ_BYTES:
-            return _error(
-                f"File is {size} bytes, larger than the {MAX_READ_BYTES} byte read limit: {path}"
-            )
-
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        return {
-            "results": {
-                "content": content,
-                "size": size,
-                "path": _relative(file_path),
-            }
-        }
+            return error(f"Path is a directory: {path}")
+        window = read_window(file_path, start_line, max_lines, MAX_READ_BYTES)
+        window.update({"path": _relative(file_path), "size": file_path.stat().st_size})
+        return {"results": window}
     except PermissionError as e:
-        return _error(str(e))
+        return error(str(e))
     except UnicodeDecodeError:
-        return _error(f"File is not UTF-8 text: {path}")
+        return error(f"File is not UTF-8 text: {path}")
     except Exception as e:
-        return _error(f"Error reading file: {str(e)}")
+        return error(f"Error reading file: {str(e)}")
 
 
-def write_file(path: str, content: str) -> Dict[str, Any]:
+def list_directory(
+    path: str = ".", recursive: bool = False, max_depth: int = 3, include_hidden: bool = False
+) -> Dict[str, Any]:
     """
-    Write UTF-8 text to a file inside the mounted directory, creating parent directories as needed.
+    List the files and subdirectories inside the mounted directory.
 
-    - Overwrites an existing file completely
-    - Parent directories are created, but only inside the mounted root
-    - Not available when the server is mounted read-only
+    - Defaults to one level of the mounted root; set recursive=true to walk
+      subdirectories down to max_depth levels
+    - Recursive walks skip version-control, dependency, and cache directories
+      such as .git, node_modules, and __pycache__, and never follow symlinks
+    - Dot-files and dot-directories are omitted unless include_hidden=true
+    - Returns at most the server's entry limit; truncated=true means there
+      were more, so narrow the path or use search_files
 
     Args:
-        path: File path to write, relative to the mounted root or absolute within it.
-        content: Text content to write (UTF-8).
+        path: Directory to list, relative to the mounted root. Defaults to the root.
+        recursive: Walk subdirectories as well. Defaults to false.
+        max_depth: How many levels to descend when recursive. Defaults to 3.
+        include_hidden: Include dot-prefixed entries. Defaults to false.
 
     Returns:
         Dictionary containing:
-        - success: true on success
-        - path: path relative to the mounted root
-        - size: number of characters written
-        Or an error message if the path is outside the root or cannot be written
-    """
-    try:
-        file_path = _safe_path(path)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-        return {
-            "results": {
-                "success": True,
-                "path": _relative(file_path),
-                "size": len(content),
-            }
-        }
-    except PermissionError as e:
-        return _error(str(e))
-    except Exception as e:
-        return _error(f"Error writing file: {str(e)}")
-
-
-def list_directory(path: str = ".") -> Dict[str, Any]:
-    """
-    List the files and subdirectories of a directory inside the mounted directory.
-
-    - Defaults to the mounted root when no path is given
-    - Each entry reports its name, type (file or directory), and size for files
-    - Entries are sorted with directories first, then by name
-
-    Args:
-        path: Directory path to list, relative to the mounted root. Defaults to the root.
-
-    Returns:
-        Dictionary containing:
-        - path: path relative to the mounted root
-        - items: list of entries with name, type, and size (files only)
+        - path: listed directory relative to the mounted root
+        - items: entries with name, path (relative to the root), type, size (files), depth
+        - truncated: true when the entry limit cut the listing short
         Or an error message if the directory is missing or outside the root
     """
     try:
+        if max_depth < 1:
+            return error("max_depth must be 1 or greater")
         dir_path = _safe_path(path)
         if not dir_path.exists():
-            return _error(f"Directory not found: {path}")
-
+            return error(f"Directory not found: {path}")
         if not dir_path.is_dir():
-            return _error(f"Path is not a directory: {path}")
-
-        items = []
-        for item in dir_path.iterdir():
-            items.append(
-                {
-                    "name": item.name,
-                    "type": "directory" if item.is_dir() else "file",
-                    "size": item.stat().st_size if item.is_file() else None,
-                }
-            )
-
-        return {
-            "results": {
-                "path": _relative(dir_path),
-                "items": sorted(items, key=lambda x: (x["type"], x["name"])),
-            }
-        }
+            return error(f"Path is not a directory: {path}")
+        items, truncated = list_entries(CONFIG, dir_path, recursive, max_depth, include_hidden)
+        return {"results": {"path": _relative(dir_path), "items": items, "truncated": truncated}}
     except PermissionError as e:
-        return _error(str(e))
+        return error(str(e))
     except Exception as e:
-        return _error(f"Error listing directory: {str(e)}")
+        return error(f"Error listing directory: {str(e)}")
 
 
-def create_directory(path: str) -> Dict[str, Any]:
+def search_files(pattern: str, path: str = ".", max_results: int = 200, include_hidden: bool = False) -> Dict[str, Any]:
     """
-    Create a directory inside the mounted directory, including missing parents.
+    Find files and directories by name pattern anywhere under a directory in the mount.
 
-    - Succeeds silently if the directory already exists
-    - Not available when the server is mounted read-only
+    - pattern is a shell-style glob matched against each entry's name and its
+      path relative to the mounted root, e.g. "*.csv", "report_*", "src/*.py"
+    - Walks every level below path, skipping version-control, dependency, and
+      cache directories, and never follows symlinks
 
     Args:
-        path: Directory path to create, relative to the mounted root or absolute within it.
+        pattern: Glob pattern to match, e.g. "*.md".
+        path: Directory to search under, relative to the mounted root. Defaults to the root.
+        max_results: Most matches to return. Defaults to 200.
+        include_hidden: Include dot-prefixed entries. Defaults to false.
 
     Returns:
         Dictionary containing:
-        - success: true on success
-        - path: path relative to the mounted root
-        Or an error message if the path is outside the root or cannot be created
+        - matches: entries with name, path, type, size, depth
+        - truncated: true when max_results or the server's entry limit cut the search short
+        Or an error message if the directory is missing or outside the root
     """
     try:
-        dir_path = _safe_path(path)
-        dir_path.mkdir(parents=True, exist_ok=True)
-
-        return {"results": {"success": True, "path": _relative(dir_path)}}
+        if not pattern:
+            return error("pattern must not be empty")
+        if max_results < 1:
+            return error("max_results must be 1 or greater")
+        start = _safe_path(path)
+        if not start.is_dir():
+            return error(f"Directory not found: {path}")
+        matches, truncated = glob_search(CONFIG, start, pattern, max_results, include_hidden)
+        return {"results": {"path": _relative(start), "pattern": pattern, "matches": matches, "truncated": truncated}}
     except PermissionError as e:
-        return _error(str(e))
+        return error(str(e))
     except Exception as e:
-        return _error(f"Error creating directory: {str(e)}")
+        return error(f"Error searching files: {str(e)}")
 
 
-def delete_file(path: str) -> Dict[str, Any]:
+def search_content(
+    query: str, path: str = ".", glob: str = "*", max_results: int = 100, case_sensitive: bool = False
+) -> Dict[str, Any]:
     """
-    Permanently delete a single file inside the mounted directory.
+    Find lines containing a text snippet in files under a directory in the mount.
 
-    - Deletes files only; directories are refused
-    - This cannot be undone
-    - Not available when the server is mounted read-only
+    - Plain substring search, case-insensitive unless case_sensitive=true
+    - glob limits which file names are scanned, e.g. "*.py" or "*.log"
+    - Binary files, hidden files, and files larger than 10 MiB are skipped
+    - Each match reports the file, line number, and the line's text, so you can
+      follow up with read_file at that start_line
 
     Args:
-        path: File path to delete, relative to the mounted root or absolute within it.
+        query: Text to look for.
+        path: Directory to search under, relative to the mounted root. Defaults to the root.
+        glob: File name pattern to scan. Defaults to every file.
+        max_results: Most matching lines to return. Defaults to 100.
+        case_sensitive: Match case exactly. Defaults to false.
 
     Returns:
         Dictionary containing:
-        - success: true on success
-        - path: path relative to the mounted root
-        Or an error message if the file is missing, is a directory, or is outside the root
+        - matches: list of {path, line, text}
+        - truncated: true when the result or file limit cut the search short
+        - files_scanned, files_skipped: how much of the tree was examined
+        Or an error message if the directory is missing or outside the root
     """
     try:
-        file_path = _safe_path(path)
-        if not file_path.exists():
-            return _error(f"File not found: {path}")
-
-        if file_path.is_dir():
-            return _error(f"Path is a directory, not a file: {path}")
-
-        file_path.unlink()
-        return {"results": {"success": True, "path": _relative(file_path)}}
+        if not query:
+            return error("query must not be empty")
+        if max_results < 1:
+            return error("max_results must be 1 or greater")
+        start = _safe_path(path)
+        if not start.is_dir():
+            return error(f"Directory not found: {path}")
+        found = content_search(CONFIG, start, query, glob, max_results, case_sensitive)
+        found.update({"path": _relative(start), "query": query})
+        return {"results": found}
     except PermissionError as e:
-        return _error(str(e))
+        return error(str(e))
     except Exception as e:
-        return _error(f"Error deleting file: {str(e)}")
+        return error(f"Error searching content: {str(e)}")
 
 
 def file_exists(path: str) -> Dict[str, Any]:
@@ -368,13 +295,144 @@ def file_exists(path: str) -> Dict[str, Any]:
             }
         }
     except PermissionError as e:
-        return _error(str(e))
+        return error(str(e))
     except Exception as e:
-        return _error(f"Error checking path: {str(e)}")
+        return error(f"Error checking path: {str(e)}")
 
 
-READ_TOOLS = (get_mount_info, read_file, list_directory, file_exists)
-WRITE_TOOLS = (write_file, create_directory, delete_file)
+def write_file(path: str, content: str, append: bool = False) -> Dict[str, Any]:
+    """
+    Write UTF-8 text to a file inside the mounted directory, creating parent directories as needed.
+
+    - Overwrites an existing file completely unless append=true
+    - Parent directories are created, but only inside the mounted root
+    - To change part of an existing file, prefer edit_file
+    - Not available when the server is mounted read-only
+
+    Args:
+        path: File path to write, relative to the mounted root or absolute within it.
+        content: Text content to write (UTF-8).
+        append: Add to the end of the file instead of replacing it. Defaults to false.
+
+    Returns:
+        Dictionary containing:
+        - success: true on success
+        - path: path relative to the mounted root
+        - size: number of characters written
+        - appended: whether the content was appended
+        Or an error message if the path is outside the root or cannot be written
+    """
+    try:
+        file_path = _safe_path(path)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(file_path, "a" if append else "w", encoding="utf-8") as f:
+            f.write(content)
+        return {"results": {"success": True, "path": _relative(file_path), "size": len(content), "appended": append}}
+    except PermissionError as e:
+        return error(str(e))
+    except Exception as e:
+        return error(f"Error writing file: {str(e)}")
+
+
+def edit_file(path: str, old_text: str, new_text: str, replace_all: bool = False) -> Dict[str, Any]:
+    """
+    Replace an exact snippet of text in a file inside the mounted directory.
+
+    - old_text must match the file exactly, including whitespace; read the file
+      first and copy the snippet
+    - Fails when old_text is missing, or appears more than once unless
+      replace_all=true, so nothing changes by accident
+    - Keeps the rest of the file untouched; use write_file to replace a whole file
+    - Not available when the server is mounted read-only
+
+    Args:
+        path: File path to edit, relative to the mounted root or absolute within it.
+        old_text: Exact text to replace.
+        new_text: Replacement text (may be empty to delete old_text).
+        replace_all: Replace every occurrence instead of requiring a unique match. Defaults to false.
+
+    Returns:
+        Dictionary containing:
+        - success: true on success
+        - path: path relative to the mounted root
+        - replacements: how many occurrences were replaced
+        Or an error message explaining why nothing was changed
+    """
+    try:
+        file_path = _safe_path(path)
+        if not file_path.is_file():
+            return error(f"File not found: {path}")
+        replacements = apply_edit(file_path, old_text, new_text, replace_all)
+        return {"results": {"success": True, "path": _relative(file_path), "replacements": replacements}}
+    except PermissionError as e:
+        return error(str(e))
+    except UnicodeDecodeError:
+        return error(f"File is not UTF-8 text: {path}")
+    except ValueError as e:
+        return error(str(e))
+    except Exception as e:
+        return error(f"Error editing file: {str(e)}")
+
+
+def create_directory(path: str) -> Dict[str, Any]:
+    """
+    Create a directory inside the mounted directory, including missing parents.
+
+    - Succeeds silently if the directory already exists
+    - Not available when the server is mounted read-only
+
+    Args:
+        path: Directory path to create, relative to the mounted root or absolute within it.
+
+    Returns:
+        Dictionary containing:
+        - success: true on success
+        - path: path relative to the mounted root
+        Or an error message if the path is outside the root or cannot be created
+    """
+    try:
+        dir_path = _safe_path(path)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        return {"results": {"success": True, "path": _relative(dir_path)}}
+    except PermissionError as e:
+        return error(str(e))
+    except Exception as e:
+        return error(f"Error creating directory: {str(e)}")
+
+
+def delete_file(path: str) -> Dict[str, Any]:
+    """
+    Permanently delete a single file inside the mounted directory.
+
+    - Deletes files only; directories are refused
+    - This cannot be undone
+    - Not available when the server is mounted read-only
+
+    Args:
+        path: File path to delete, relative to the mounted root or absolute within it.
+
+    Returns:
+        Dictionary containing:
+        - success: true on success
+        - path: path relative to the mounted root
+        Or an error message if the file is missing, is a directory, or is outside the root
+    """
+    try:
+        file_path = _safe_path(path)
+        if not file_path.exists():
+            return error(f"File not found: {path}")
+        if file_path.is_dir():
+            return error(f"Path is a directory, not a file: {path}")
+        file_path.unlink()
+        return {"results": {"success": True, "path": _relative(file_path)}}
+    except PermissionError as e:
+        return error(str(e))
+    except Exception as e:
+        return error(f"Error deleting file: {str(e)}")
+
+
+READ_TOOLS = (get_mount_info, read_file, list_directory, search_files, search_content, file_exists)
+WRITE_TOOLS = (write_file, edit_file, create_directory, delete_file)
 
 for _tool in READ_TOOLS:
     mcp.tool(_tool)

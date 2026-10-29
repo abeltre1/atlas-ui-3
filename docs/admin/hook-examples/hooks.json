@@ -33,7 +33,7 @@
     "PreToolUse": [
       {
         "name": "workspace-only-files",
-        "matcher": "filesystem__.*",
+        "matcher": "filesystem_.*",
         "command": ["${ATLAS_CONFIG_DIR}/hooks/pre_tool_use.sh"],
         "timeout_ms": 2000
       }

@@ -1,17 +1,27 @@
 {
   "filesystem": {
-    "command": ["python", "mcp/filesystem/main.py"],
+    "command": [
+      "python",
+      "mcp/filesystem/main.py"
+    ],
     "cwd": "atlas",
     "env": {
       "ATLAS_FS_ROOT": "${ATLAS_FS_ROOT}",
       "ATLAS_FS_READ_ONLY": "false"
     },
-    "groups": ["users"],
-    "description": "Browse, read, and edit files in one local directory mounted into the chat. Every tool is confined to ATLAS_FS_ROOT; set ATLAS_FS_READ_ONLY=true to expose only the read tools.",
+    "groups": [
+      "users"
+    ],
+    "description": "Browse, search, read, and edit files in one local directory mounted into the chat. Every tool is confined to ATLAS_FS_ROOT; set ATLAS_FS_READ_ONLY=true to expose only the read tools.",
     "author": "Chat UI Team",
     "short_description": "Local directory mount",
     "help_email": "support@chatui.example.com",
-    "require_approval": ["write_file", "delete_file", "create_directory"],
+    "require_approval": [
+      "write_file",
+      "edit_file",
+      "delete_file",
+      "create_directory"
+    ],
     "compliance_level": "Public"
   }
 }

@@ -232,12 +232,13 @@ export MY_API_KEY="your-secret-api-key"
 
 ## Mounting a Local Directory
 
-The bundled `filesystem` server (`atlas/mcp/filesystem/main.py`) mounts **one
-local directory** into the chat and confines every tool to it. Relative paths
+The bundled `filesystem` server (`atlas/mcp/filesystem/`) mounts **one local
+directory** into the chat and confines every tool to it. Relative paths
 resolve against that directory, absolute paths are accepted only when they are
 already inside it, and symlinks are resolved before the check, so a link that
-points outside the directory is rejected like any other escape. The server
-never advertises a way to change the root at runtime.
+points outside the directory is rejected like any other escape. Recursive
+listings and searches never follow symlinks. The server never advertises a way
+to change the root at runtime.
 
 Copy [`mcp-filesystem.json`](../../atlas/config/mcp-example-configs/mcp-filesystem.json)
 into `config/mcp.json` and set the root:
@@ -252,7 +253,7 @@ into `config/mcp.json` and set the root:
       "ATLAS_FS_READ_ONLY": "false"
     },
     "groups": ["users"],
-    "require_approval": ["write_file", "delete_file", "create_directory"],
+    "require_approval": ["write_file", "edit_file", "delete_file", "create_directory"],
     "compliance_level": "Public"
   }
 }
@@ -262,23 +263,73 @@ into `config/mcp.json` and set the root:
 export ATLAS_FS_ROOT=/data/projects/alpha   # or set it in .env
 ```
 
-The server reads three environment variables from its `env` block:
+### Tools
+
+The server is built for the agent loop: every tool returns a bounded,
+structured result, large files are read in pages, and the model can find what
+it needs before reading it.
+
+| Tool | Mode | What it does |
+|---|---|---|
+| `get_mount_info` | read | Reports the mounted path, whether it is writable, the limits, and the tools available. |
+| `list_directory` | read | Lists one level, or `recursive=true` down to `max_depth`. Skips `.git`, `node_modules`, caches and dot-entries unless `include_hidden=true`. |
+| `search_files` | read | Finds entries by glob (`*.csv`, `src/*.py`) anywhere under a directory. |
+| `search_content` | read | Finds lines containing a snippet, with file and line number, optionally limited by a file-name glob. |
+| `read_file` | read | Returns a page of a UTF-8 text file from `start_line`, up to `max_lines` lines and the read byte limit; `has_more` and `next_start_line` say where to continue. |
+| `file_exists` | read | Reports whether a path exists and whether it is a file or directory. |
+| `write_file` | write | Creates or overwrites a file (or appends with `append=true`), creating parents inside the root. |
+| `edit_file` | write | Replaces an exact snippet; refuses when the snippet is missing or ambiguous unless `replace_all=true`. |
+| `create_directory` | write | Creates a directory and missing parents. |
+| `delete_file` | write | Deletes one file; never directories. |
+
+### Environment variables
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ATLAS_FS_ROOT` | the entry's `cwd` | Directory to mount. Must exist and be a directory, or the server refuses to start and the admin panel shows it as failed. |
-| `ATLAS_FS_READ_ONLY` | `false` | `true` registers only `read_file`, `list_directory`, `file_exists` and `get_mount_info`. The write, create and delete tools are not advertised to the model at all. |
-| `ATLAS_FS_MAX_READ_BYTES` | `1048576` | Largest file `read_file` will return. Larger files produce an error instead of being loaded into the model's context. |
+| `ATLAS_FS_ROOT` | the entry's `cwd` | Directory to mount. Must exist and be a directory, or the server refuses to start and the admin panel shows the reason. |
+| `ATLAS_FS_READ_ONLY` | `false` | `true` registers only the read tools. The write, edit, create and delete tools are not advertised to the model at all. |
+| `ATLAS_FS_MAX_READ_BYTES` | `131072` | Most text one `read_file` call returns. Longer files are paged, never loaded whole into the model's context. 128 KiB is roughly 32k tokens. |
+| `ATLAS_FS_MAX_LIST_ENTRIES` | `500` | Most entries one listing or search returns; results report `truncated: true` past it. |
 
-`get_mount_info` reports the mounted path and whether it is writable, so a user
-or the model can check what the server exposes before touching it.
+### Keeping the mount safe
 
-**Do not leave `ATLAS_FS_ROOT` unset with `cwd: "atlas"`.** Without a root the
-server falls back to its working directory, which in that configuration is the
-Atlas package itself, and a writable mount there lets the model edit the
-application's own code and package defaults. Point the root at a dedicated
-folder, and keep `require_approval` on the mutating tools unless the directory
-is disposable.
+- **Do not leave `ATLAS_FS_ROOT` unset with `cwd: "atlas"`.** Without a root the
+  server falls back to its working directory, which in that configuration is the
+  Atlas package itself, and a writable mount there lets the model edit the
+  application's own code and package defaults. Point the root at a dedicated
+  folder.
+- **Keep `require_approval` on the mutating tools** unless the directory is
+  disposable. Tools listed there are admin-required: a user cannot auto-approve
+  them, and a background run launched with `atlas_launch` pauses on them until
+  the user opens that conversation.
+- **Classify the mount like its contents.** The example ships as `Public`. If
+  the folder holds internal data, set `allowed_data_classifications` so the
+  server is only usable in conversations at a matching level (see
+  [Compliance](compliance.md)).
+- **Add a policy hook** for anything the approval gate cannot express. The
+  bundled `pre_tool_use.sh` example blocks writes outside a workspace path; its
+  matcher is `filesystem_.*` (the qualified tool name uses a single underscore).
+  See [Hooks](hooks.md).
+- **Logged paths.** `get_mount_info` and every result report the absolute
+  mount path and root-relative file paths, and those land in the saved
+  conversation.
+
+### Running in a container
+
+The server reads the directory from the backend's filesystem, so in a container
+the directory has to be mounted in and the variable has to point at the
+in-container path:
+
+```bash
+podman run -p 8000:8000 \
+  -v /data/projects/alpha:/mnt/alpha:Z \
+  -e ATLAS_FS_ROOT=/mnt/alpha \
+  atlas-ui-3
+```
+
+With Compose, add the bind mount to the `atlas-ui` service's `volumes` and
+`ATLAS_FS_ROOT=/mnt/alpha` to its environment. Use `:ro` on the bind mount for a
+read-only mount in addition to `ATLAS_FS_READ_ONLY=true`.
 
 Scaling note: this is a stdio server, so the mounted directory is the local
 disk of the backend replica that started it. On a multi-replica deployment each
